@@ -1,5 +1,6 @@
 from typing import Literal
 from pydantic import BaseModel, Field
+from app.observability.telemetry import trace_span
 
 
 class ScanComputeInput(BaseModel):
@@ -51,53 +52,53 @@ def scan_idle_compute_instances(
     Returns:
         A dictionary matching ScanComputeOutput with findings and cost/carbon savings estimates.
     """
-    if not project_id or not project_id.strip():
-        return {
-            "error": "INVALID_PROJECT_ID",
-            "message": "project_id cannot be empty.",
-            "recovery_hint": "Provide a valid GCP project ID such as 'ctsal200' and retry scan_idle_compute_instances.",
-        }
-    if min_idle_days < 1 or min_idle_days > 90:
-        return {
-            "error": "INVALID_IDLE_WINDOW",
-            "message": f"min_idle_days={min_idle_days} is outside the supported range of 1 to 90.",
-            "recovery_hint": "Set min_idle_days between 1 and 90 (for example, 7 or 14) and call the tool again.",
-        }
+    with trace_span("scan_idle_compute_instances", {"project_id": project_id, "region": region}):
+        if not project_id or not project_id.strip():
+            return {
+                "error": "INVALID_PROJECT_ID",
+                "message": "project_id cannot be empty.",
+                "recovery_hint": "Provide a valid GCP project ID such as 'ctsal200' and retry scan_idle_compute_instances.",
+            }
+        if min_idle_days < 1 or min_idle_days > 90:
+            return {
+                "error": "INVALID_IDLE_WINDOW",
+                "message": f"min_idle_days={min_idle_days} is outside the supported range of 1 to 90.",
+                "recovery_hint": "Set min_idle_days between 1 and 90 (for example, 7 or 14) and call the tool again.",
+            }
 
-    # Sample telemetry dataset for deterministic local/lab verification
-    sample_findings = [
-        ResourceFinding(
-            resource_name="dev-ml-gpu-worker-01",
-            resource_type="compute_instance",
-            region=region,
-            avg_cpu_percent=3.2,
-            estimated_monthly_cost_usd=285.00,
-            estimated_monthly_kg_co2e=42.4,
-            recommended_action="Downsize machine type or schedule off-hours shutdown",
-        ),
-        ResourceFinding(
-            resource_name="unattached-staging-pd-200gb",
-            resource_type="persistent_disk",
-            region=region,
-            avg_cpu_percent=0.0,
-            estimated_monthly_cost_usd=34.00,
-            estimated_monthly_kg_co2e=5.1,
-            recommended_action="Snapshot and delete unattached persistent disk",
-        ),
-    ]
+        sample_findings = [
+            ResourceFinding(
+                resource_name="dev-ml-gpu-worker-01",
+                resource_type="compute_instance",
+                region=region,
+                avg_cpu_percent=3.2,
+                estimated_monthly_cost_usd=285.00,
+                estimated_monthly_kg_co2e=42.4,
+                recommended_action="Downsize machine type or schedule off-hours shutdown",
+            ),
+            ResourceFinding(
+                resource_name="unattached-staging-pd-200gb",
+                resource_type="persistent_disk",
+                region=region,
+                avg_cpu_percent=0.0,
+                estimated_monthly_cost_usd=34.00,
+                estimated_monthly_kg_co2e=5.1,
+                recommended_action="Snapshot and delete unattached persistent disk",
+            ),
+        ]
 
-    output = ScanComputeOutput(
-        project_id=project_id.strip(),
-        region=region.strip() or "us-central1",
-        findings=sample_findings,
-        total_potential_monthly_savings_usd=round(
-            sum(f.estimated_monthly_cost_usd for f in sample_findings), 2
-        ),
-        total_potential_monthly_kg_co2e_reduction=round(
-            sum(f.estimated_monthly_kg_co2e for f in sample_findings), 2
-        ),
-    )
-    return output.model_dump()
+        output = ScanComputeOutput(
+            project_id=project_id.strip(),
+            region=region.strip() or "us-central1",
+            findings=sample_findings,
+            total_potential_monthly_savings_usd=round(
+                sum(f.estimated_monthly_cost_usd for f in sample_findings), 2
+            ),
+            total_potential_monthly_kg_co2e_reduction=round(
+                sum(f.estimated_monthly_kg_co2e for f in sample_findings), 2
+            ),
+        )
+        return output.model_dump()
 
 
 def request_infrastructure_remediation_approval(
@@ -117,20 +118,21 @@ def request_infrastructure_remediation_approval(
     Returns:
         A structured approval payload requiring explicit human confirmation before any state change.
     """
-    if not resource_name.strip() or not proposed_action.strip():
-        return {
-            "error": "MISSING_REMEDIATION_DETAILS",
-            "message": "Both resource_name and proposed_action are required.",
-            "recovery_hint": "Pass a non-empty resource_name and a concrete proposed_action before requesting approval.",
-        }
+    with trace_span("request_infrastructure_remediation_approval", {"resource_name": resource_name}):
+        if not resource_name.strip() or not proposed_action.strip():
+            return {
+                "error": "MISSING_REMEDIATION_DETAILS",
+                "message": "Both resource_name and proposed_action are required.",
+                "recovery_hint": "Pass a non-empty resource_name and a concrete proposed_action before requesting approval.",
+            }
 
-    payload = RemediationApprovalRequest(
-        approval_id=f"APR-{abs(hash((resource_name, proposed_action))) % 100000:05d}",
-        resource_name=resource_name.strip(),
-        proposed_action=proposed_action.strip(),
-        estimated_monthly_cost_usd=max(0.0, round(estimated_monthly_cost_usd, 2)),
-        estimated_monthly_kg_co2e_reduction=max(0.0, round(estimated_monthly_kg_co2e_reduction, 2)),
-        status="PENDING_HUMAN_APPROVAL",
-        required_confirmation="Human operator must explicitly approve before applying any infrastructure change.",
-    )
-    return payload.model_dump()
+        payload = RemediationApprovalRequest(
+            approval_id=f"APR-{abs(hash((resource_name, proposed_action))) % 100000:05d}",
+            resource_name=resource_name.strip(),
+            proposed_action=proposed_action.strip(),
+            estimated_monthly_cost_usd=max(0.0, round(estimated_monthly_cost_usd, 2)),
+            estimated_monthly_kg_co2e_reduction=max(0.0, round(estimated_monthly_kg_co2e_reduction, 2)),
+            status="PENDING_HUMAN_APPROVAL",
+            required_confirmation="Human operator must explicitly approve before applying any infrastructure change.",
+        )
+        return payload.model_dump()
