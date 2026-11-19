@@ -1,26 +1,93 @@
 import asyncio
+import json
+import sqlite3
+from pathlib import Path
 from typing import Any
 from app.observability.telemetry import log_structured_event, redact_pii
 
 
 class AdvisorSessionStore:
-    """Manages session state, sliding-window history compaction, and async memory notes."""
+    """Manages persistent session state, history compaction, and async memory consolidation."""
 
-    def __init__(self, max_history_turns: int = 10, max_summary_chars: int = 1200) -> None:
+    def __init__(
+        self,
+        db_path: str = ".advisor_sessions.sqlite3",
+        max_history_turns: int = 10,
+        max_summary_chars: int = 1200,
+    ) -> None:
+        self.db_path = db_path
         self.max_history_turns = max_history_turns
         self.max_summary_chars = max_summary_chars
-        self._sessions: dict[str, dict[str, Any]] = {}
+        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        self._init_db()
+
+    def _connect(self) -> sqlite3.Connection:
+        return sqlite3.connect(self.db_path)
+
+    def _init_db(self) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS sessions (
+                    session_id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    history_json TEXT NOT NULL,
+                    compacted_summary TEXT NOT NULL,
+                    memory_notes_json TEXT NOT NULL
+                )
+                """
+            )
+            conn.commit()
+
+    def _save_session(self, session: dict[str, Any]) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO sessions (session_id, project_id, history_json, compacted_summary, memory_notes_json)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    project_id = excluded.project_id,
+                    history_json = excluded.history_json,
+                    compacted_summary = excluded.compacted_summary,
+                    memory_notes_json = excluded.memory_notes_json
+                """,
+                (
+                    session["session_id"],
+                    session["project_id"],
+                    json.dumps(session["history"]),
+                    session["compacted_summary"],
+                    json.dumps(session["memory_notes"]),
+                ),
+            )
+            conn.commit()
 
     def get_or_create_session(self, session_id: str, project_id: str = "ctsal200") -> dict[str, Any]:
-        if session_id not in self._sessions:
-            self._sessions[session_id] = {
-                "session_id": session_id,
-                "project_id": project_id,
-                "history": [],
-                "compacted_summary": "",
-                "memory_notes": [],
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT session_id, project_id, history_json, compacted_summary, memory_notes_json
+                FROM sessions WHERE session_id = ?
+                """,
+                (session_id,),
+            ).fetchone()
+        if row is not None:
+            return {
+                "session_id": row[0],
+                "project_id": row[1],
+                "history": json.loads(row[2]),
+                "compacted_summary": row[3],
+                "memory_notes": json.loads(row[4]),
             }
-        return self._sessions[session_id]
+
+        session = {
+            "session_id": session_id,
+            "project_id": project_id,
+            "history": [],
+            "compacted_summary": "",
+            "memory_notes": [],
+        }
+        self._save_session(session)
+        return session
 
     def compact_history(self, session_id: str) -> str:
         """Compacts older turns when history exceeds max_history_turns to prevent context bloat."""
@@ -38,6 +105,7 @@ class AdvisorSessionStore:
         ]
         merged = (session["compacted_summary"] + "\n" + "\n".join(condensed_lines)).strip()
         session["compacted_summary"] = merged[-self.max_summary_chars :]
+        self._save_session(session)
 
         log_structured_event(
             event_type="history_compaction",
@@ -66,6 +134,7 @@ class AdvisorSessionStore:
             session["memory_notes"].append(note)
             session["memory_notes"] = session["memory_notes"][-25:]
 
+        self._save_session(session)
         log_structured_event(
             event_type="async_memory_consolidation",
             intent=f"Persist {role} turn into session memory for {session_id}",

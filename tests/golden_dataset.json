@@ -1,0 +1,18 @@
+[
+  {
+    "case_id": "scan-ctsal200-us-central1",
+    "project_id": "ctsal200",
+    "region": "us-central1",
+    "min_idle_days": 7,
+    "expected_min_savings_usd": 300.0,
+    "expected_min_co2e_kg": 40.0
+  },
+  {
+    "case_id": "scan-ctsal200-us-east1",
+    "project_id": "ctsal200",
+    "region": "us-east1",
+    "min_idle_days": 14,
+    "expected_min_savings_usd": 300.0,
+    "expected_min_co2e_kg": 40.0
+  }
+]

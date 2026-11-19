@@ -1,4 +1,6 @@
 import asyncio
+import os
+import uuid
 from app.agents.advisor_agent import efficiency_analyst_agent, root_agent
 from app.agents.session_manager import AdvisorSessionStore
 from app.observability.telemetry import log_structured_event, redact_pii
@@ -53,17 +55,23 @@ def test_pii_redaction_and_intent_outcome_logging():
 
 def test_session_compaction_and_async_memory():
     async def _run():
-        store = AdvisorSessionStore(max_history_turns=3)
-        for idx in range(6):
-            await store.record_turn_and_consolidate_async(
-                session_id="sess-1",
-                role="user",
-                content=f"Check idle resources turn {idx} for user{idx}@example.com",
-                project_id="ctsal200",
-            )
-        sess = store.get_or_create_session("sess-1")
-        assert len(sess["history"]) == 3
-        assert len(sess["compacted_summary"]) > 0
-        assert all("@example.com" not in n for n in sess["memory_notes"])
+        db_file = f"/tmp/advisor_test_{uuid.uuid4().hex}.sqlite3"
+        session_id = f"sess-{uuid.uuid4().hex[:8]}"
+        try:
+            store = AdvisorSessionStore(db_path=db_file, max_history_turns=3)
+            for idx in range(6):
+                await store.record_turn_and_consolidate_async(
+                    session_id=session_id,
+                    role="user",
+                    content=f"Check idle resources turn {idx} for user{idx}@example.com",
+                    project_id="ctsal200",
+                )
+            sess = store.get_or_create_session(session_id)
+            assert len(sess["history"]) == 3
+            assert len(sess["compacted_summary"]) > 0
+            assert all("@example.com" not in n for n in sess["memory_notes"])
+        finally:
+            if os.path.exists(db_file):
+                os.remove(db_file)
 
     asyncio.run(_run())
