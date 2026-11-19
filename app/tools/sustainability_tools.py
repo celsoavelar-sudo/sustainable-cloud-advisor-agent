@@ -1,12 +1,19 @@
 from typing import Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from app.observability.telemetry import trace_span
 
 
 class ScanComputeInput(BaseModel):
-    project_id: str = Field(..., description="GCP project ID to inspect for idle or overprovisioned resources.")
-    region: str = Field(default="us-central1", description="GCP region to filter compute inventory.")
-    min_idle_days: int = Field(default=7, ge=1, le=90, description="Minimum days of low utilization to flag.")
+    project_id: str = Field(..., min_length=1, description="GCP project ID to inspect.")
+    region: str = Field(default="us-central1", min_length=1, description="GCP region.")
+    min_idle_days: int = Field(default=7, ge=1, le=90, description="Idle window in days.")
+
+
+class RemediationApprovalInput(BaseModel):
+    resource_name: str = Field(..., min_length=1, description="Target resource name.")
+    proposed_action: str = Field(..., min_length=1, description="Proposed remediation action.")
+    estimated_monthly_cost_usd: float = Field(..., ge=0.0, description="Monthly savings USD.")
+    estimated_monthly_kg_co2e_reduction: float = Field(..., ge=0.0, description="Monthly kg CO2e.")
 
 
 class ResourceFinding(BaseModel):
@@ -42,35 +49,26 @@ def scan_idle_compute_instances(
     region: str = "us-central1",
     min_idle_days: int = 7,
 ) -> dict:
-    """Scans cloud compute and storage workloads for idle or overprovisioned capacity.
-
-    Args:
-        project_id: Target GCP project ID (non-empty string).
-        region: Target GCP region such as us-central1 or us-east1.
-        min_idle_days: Number of consecutive low-usage days (1-90) required to flag a resource.
-
-    Returns:
-        A dictionary matching ScanComputeOutput with findings and cost/carbon savings estimates.
-    """
+    """Scans cloud compute and storage workloads for idle or overprovisioned capacity."""
     with trace_span("scan_idle_compute_instances", {"project_id": project_id, "region": region}):
-        if not project_id or not project_id.strip():
+        try:
+            validated = ScanComputeInput(
+                project_id=project_id.strip() if isinstance(project_id, str) else "",
+                region=region.strip() if isinstance(region, str) else "us-central1",
+                min_idle_days=min_idle_days,
+            )
+        except ValidationError as exc:
             return {
                 "error": "INVALID_PROJECT_ID",
-                "message": "project_id cannot be empty.",
-                "recovery_hint": "Provide a valid GCP project ID such as 'ctsal200' and retry scan_idle_compute_instances.",
-            }
-        if min_idle_days < 1 or min_idle_days > 90:
-            return {
-                "error": "INVALID_IDLE_WINDOW",
-                "message": f"min_idle_days={min_idle_days} is outside the supported range of 1 to 90.",
-                "recovery_hint": "Set min_idle_days between 1 and 90 (for example, 7 or 14) and call the tool again.",
+                "message": str(exc.errors()[0]["msg"]) if exc.errors() else "Invalid scan input.",
+                "recovery_hint": "Pass a non-empty project_id (e.g. 'ctsal200') and min_idle_days between 1 and 90.",
             }
 
         sample_findings = [
             ResourceFinding(
                 resource_name="dev-ml-gpu-worker-01",
                 resource_type="compute_instance",
-                region=region,
+                region=validated.region,
                 avg_cpu_percent=3.2,
                 estimated_monthly_cost_usd=285.00,
                 estimated_monthly_kg_co2e=42.4,
@@ -79,17 +77,16 @@ def scan_idle_compute_instances(
             ResourceFinding(
                 resource_name="unattached-staging-pd-200gb",
                 resource_type="persistent_disk",
-                region=region,
+                region=validated.region,
                 avg_cpu_percent=0.0,
                 estimated_monthly_cost_usd=34.00,
                 estimated_monthly_kg_co2e=5.1,
                 recommended_action="Snapshot and delete unattached persistent disk",
             ),
         ]
-
         output = ScanComputeOutput(
-            project_id=project_id.strip(),
-            region=region.strip() or "us-central1",
+            project_id=validated.project_id,
+            region=validated.region,
             findings=sample_findings,
             total_potential_monthly_savings_usd=round(
                 sum(f.estimated_monthly_cost_usd for f in sample_findings), 2
@@ -107,32 +104,29 @@ def request_infrastructure_remediation_approval(
     estimated_monthly_cost_usd: float,
     estimated_monthly_kg_co2e_reduction: float,
 ) -> dict:
-    """Pauses execution for human-in-the-loop approval before mutating or deleting cloud resources.
-
-    Args:
-        resource_name: Exact identifier of the cloud resource to modify or stop.
-        proposed_action: Specific remediation action (e.g., stop instance, downsize, delete disk).
-        estimated_monthly_cost_usd: Estimated monthly dollar savings if approved.
-        estimated_monthly_kg_co2e_reduction: Estimated monthly carbon emissions reduction in kg CO2e.
-
-    Returns:
-        A structured approval payload requiring explicit human confirmation before any state change.
-    """
+    """Pauses execution for human-in-the-loop approval before mutating cloud resources."""
     with trace_span("request_infrastructure_remediation_approval", {"resource_name": resource_name}):
-        if not resource_name.strip() or not proposed_action.strip():
+        try:
+            validated = RemediationApprovalInput(
+                resource_name=resource_name.strip() if isinstance(resource_name, str) else "",
+                proposed_action=proposed_action.strip() if isinstance(proposed_action, str) else "",
+                estimated_monthly_cost_usd=estimated_monthly_cost_usd,
+                estimated_monthly_kg_co2e_reduction=estimated_monthly_kg_co2e_reduction,
+            )
+        except ValidationError:
             return {
                 "error": "MISSING_REMEDIATION_DETAILS",
                 "message": "Both resource_name and proposed_action are required.",
-                "recovery_hint": "Pass a non-empty resource_name and a concrete proposed_action before requesting approval.",
+                "recovery_hint": "Provide non-empty resource_name and proposed_action values.",
             }
 
         payload = RemediationApprovalRequest(
-            approval_id=f"APR-{abs(hash((resource_name, proposed_action))) % 100000:05d}",
-            resource_name=resource_name.strip(),
-            proposed_action=proposed_action.strip(),
-            estimated_monthly_cost_usd=max(0.0, round(estimated_monthly_cost_usd, 2)),
-            estimated_monthly_kg_co2e_reduction=max(0.0, round(estimated_monthly_kg_co2e_reduction, 2)),
+            approval_id=f"APR-{abs(hash((validated.resource_name, validated.proposed_action))) % 100000:05d}",
+            resource_name=validated.resource_name,
+            proposed_action=validated.proposed_action,
+            estimated_monthly_cost_usd=round(validated.estimated_monthly_cost_usd, 2),
+            estimated_monthly_kg_co2e_reduction=round(validated.estimated_monthly_kg_co2e_reduction, 2),
             status="PENDING_HUMAN_APPROVAL",
-            required_confirmation="Human operator must explicitly approve before applying any infrastructure change.",
+            required_confirmation="Human operator must explicitly approve before applying any change.",
         )
         return payload.model_dump()
