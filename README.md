@@ -1,18 +1,21 @@
 # Sustainable Cloud Advisor Agent
 
 ## Problem Statement
-Organizations waste cloud resources due to idle infrastructure and overprovisioned workloads. Identifying inefficiencies and opportunities for optimization requires time-consuming manual analysis.
+Organizations waste cloud resources due to idle infrastructure and overprovisioned workloads.
 
 ## Solution Statement
-A Sustainable Cloud Advisor AI Agent built with Google ADK that analyzes Google Cloud resource utilization, identifies inefficiencies, quantifies cost and carbon (`kg CO2e`) savings, and routes high-impact infrastructure changes through human-in-the-loop approval.
+A Google ADK multi-agent system that scans cloud compute and storage utilization, estimates cost (`USD`) and carbon (`kg CO2e`) savings, and routes mutations through human-in-the-loop approval.
 
-## Key Capabilities
-- **Multi-Agent Orchestration**: Coordinator agent (`sustainable_cloud_advisor`) paired with a specialized `efficiency_analyst` sub-agent and a human-in-the-loop approval gate (`request_infrastructure_remediation_approval`).
-- **Schema-Validated Tools**: Pydantic input/output models, clear docstrings, and recovery hints on invalid inputs.
-- **Context, Memory & Observability**: Sliding-window history compaction, async memory consolidation, PII redaction, OpenTelemetry span wrappers, and structured JSON logs capturing intent vs. outcome.
-- **Infrastructure & CI/CD**: Terraform configuration for APIs, runtime service account, and Secret Manager access (`infra/`), automated `pytest` workflow (`.github/workflows/ci.yml`), and `uv.lock` dependency locking.
+## Infrastructure as Code & Agent CLI Deployment
+- **Terraform (`infra/main.tf`, `infra/variables.tf`, `infra/outputs.tf`)**: Enables GCP APIs, creates `sustainable-cloud-advisor-sa`, and provisions `sustainable-cloud-advisor-config` in Secret Manager with IAM access.
+- **Agent CLI (`agents-cli`)**:
+```bash
+terraform -chdir=infra init -input=false
+terraform -chdir=infra validate
+agents-cli deploy --agent-name sustainable-cloud-advisor-agent --project ctsal200 --region us-central1 --no-confirm-project
+```
 
 ## Run Tests
 ```bash
 PYTHONPATH=. uv run pytest -v
-cat <<'EOF' >> README.md
+```

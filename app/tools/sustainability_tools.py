@@ -49,7 +49,16 @@ def scan_idle_compute_instances(
     region: str = "us-central1",
     min_idle_days: int = 7,
 ) -> dict:
-    """Scans cloud compute and storage workloads for idle or overprovisioned capacity."""
+    """Scans cloud compute and storage workloads for idle or overprovisioned capacity.
+
+    Args:
+        project_id: Target GCP project ID to inspect (non-empty string, e.g., 'ctsal200').
+        region: Target GCP region to filter inventory (e.g., 'us-central1' or 'us-east1').
+        min_idle_days: Minimum consecutive low-utilization days between 1 and 90.
+
+    Returns:
+        Dictionary containing validated findings and estimated monthly cost/carbon savings.
+    """
     with trace_span("scan_idle_compute_instances", {"project_id": project_id, "region": region}):
         try:
             validated = ScanComputeInput(
@@ -104,7 +113,17 @@ def request_infrastructure_remediation_approval(
     estimated_monthly_cost_usd: float,
     estimated_monthly_kg_co2e_reduction: float,
 ) -> dict:
-    """Pauses execution for human-in-the-loop approval before mutating cloud resources."""
+    """Pauses execution for human-in-the-loop approval before mutating cloud resources.
+
+    Args:
+        resource_name: Exact identifier of the target cloud resource to modify or stop.
+        proposed_action: Concrete remediation action such as stopping or downsizing the resource.
+        estimated_monthly_cost_usd: Estimated monthly cost savings in USD (>= 0.0).
+        estimated_monthly_kg_co2e_reduction: Estimated monthly carbon savings in kg CO2e (>= 0.0).
+
+    Returns:
+        Structured approval payload requiring explicit human confirmation before mutation.
+    """
     with trace_span("request_infrastructure_remediation_approval", {"resource_name": resource_name}):
         try:
             validated = RemediationApprovalInput(
