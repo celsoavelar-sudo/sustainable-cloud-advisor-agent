@@ -122,13 +122,15 @@ class AdvisorSessionStore:
         content: str,
         project_id: str = "ctsal200",
     ) -> dict[str, Any]:
-        """Appends a turn and consolidates memory asynchronously without blocking the caller."""
+        """Appends a turn, persists and compacts history, and consolidates memory asynchronously."""
         session = self.get_or_create_session(session_id, project_id=project_id)
         clean_content = redact_pii(content)
         session["history"].append({"role": role, "content": clean_content})
+        self._save_session(session)
         self.compact_history(session_id)
 
         await asyncio.sleep(0)
+        session = self.get_or_create_session(session_id, project_id=project_id)
         note = f"[{role}] {clean_content[:180]}"
         if note not in session["memory_notes"]:
             session["memory_notes"].append(note)
